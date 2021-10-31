@@ -1623,7 +1623,7 @@ static int add_subprog(struct bpf_verifier_env *env, int off)
 	env->subprog_info[env->subprog_cnt++].start = off;
 	sort(env->subprog_info, env->subprog_cnt,
 	     sizeof(env->subprog_info[0]), cmp_subprogs, NULL);
-	return env->subprog_cnt - 1;
+	return find_subprog(env, off);
 }
 
 struct bpf_kfunc_desc {
@@ -1807,12 +1807,7 @@ static int add_subprog_and_kfunc(struct bpf_verifier_env *env)
 			return -EPERM;
 		}
 
-		if (bpf_pseudo_func(insn)) {
-			ret = add_subprog(env, i + insn->imm + 1);
-			if (ret >= 0)
-				/* remember subprog */
-				insn[1].imm = ret;
-		} else if (bpf_pseudo_call(insn)) {
+		if (bpf_pseudo_call(insn) || bpf_pseudo_func(insn)) {
 			ret = add_subprog(env, i + insn->imm + 1);
 		} else {
 			ret = add_kfunc_call(env, insn->imm);
@@ -9136,6 +9131,8 @@ static int check_ld_imm(struct bpf_verifier_env *env, struct bpf_insn *insn)
 	struct bpf_reg_state *dst_reg;
 	struct bpf_map *map;
 	int err;
+	int target_insn;
+	u32 subprogno;
 
 	if (BPF_SIZE(insn->code) != BPF_DW) {
 		verbose(env, "invalid BPF_LD_IMM insn\n");
@@ -9181,7 +9178,13 @@ static int check_ld_imm(struct bpf_verifier_env *env, struct bpf_insn *insn)
 
 	if (insn->src_reg == BPF_PSEUDO_FUNC) {
 		struct bpf_prog_aux *aux = env->prog->aux;
-		u32 subprogno = insn[1].imm;
+		target_insn = env->insn_idx + insn->imm + 1;
+		subprogno = find_subprog(env, target_insn);
+		if (subprogno < 0) {
+			verbose(env, "verifier bug. No subprog starts at insn %d\n",
+				target_insn);
+			return -EFAULT;
+		}
 
 		if (!aux->func_info) {
 			verbose(env, "missing btf func_info\n");
@@ -12350,13 +12353,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		return 0;
 
 	for (i = 0, insn = prog->insnsi; i < prog->len; i++, insn++) {
-		if (bpf_pseudo_func(insn)) {
-			env->insn_aux_data[i].call_imm = insn->imm;
-			/* subprog is encoded in insn[1].imm */
-			continue;
-		}
-
-		if (!bpf_pseudo_call(insn))
+		if (!bpf_pseudo_call(insn) && !bpf_pseudo_func(insn))
 			continue;
 		/* Upon error here we cannot fall back to interpreter but
 		 * need a hard reject of the program. Thus -EFAULT is
@@ -12461,7 +12458,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		insn = func[i]->insnsi;
 		for (j = 0; j < func[i]->len; j++, insn++) {
 			if (bpf_pseudo_func(insn)) {
-				subprog = insn[1].imm;
+				subprog = insn->off;
 				insn[0].imm = (u32)(long)func[subprog]->bpf_func;
 				insn[1].imm = ((u64)(long)func[subprog]->bpf_func) >> 32;
 				continue;

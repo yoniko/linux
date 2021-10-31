@@ -390,19 +390,30 @@ static int bpf_adj_branches(struct bpf_prog *prog, u32 pos, s32 end_old,
 			insn = prog->insnsi + end_old;
 		}
 		code = insn->code;
-		if ((BPF_CLASS(code) != BPF_JMP &&
-		     BPF_CLASS(code) != BPF_JMP32) ||
-		    BPF_OP(code) == BPF_EXIT)
-			continue;
-		/* Adjust offset of jmps if we cross patch boundaries. */
-		if (BPF_OP(code) == BPF_CALL) {
-			if (insn->src_reg != BPF_PSEUDO_CALL)
-				continue;
+		if(BPF_CLASS(code) == BPF_LD &&
+		    BPF_MODE(code)==BPF_IMM &&
+		    BPF_SIZE(code) == BPF_DW &&
+		    insn->src_reg == BPF_PSEUDO_FUNC) {
 			ret = bpf_adj_delta_to_imm(insn, pos, end_old,
 						   end_new, i, probe_pass);
-		} else {
-			ret = bpf_adj_delta_to_off(insn, pos, end_old,
-						   end_new, i, probe_pass);
+		}
+		else if (BPF_CLASS(code) == BPF_JMP ||
+			 BPF_CLASS(code) == BPF_JMP32)
+		{
+			if(BPF_OP(code) == BPF_EXIT)
+				continue;
+			/* Adjust offset of jmps if we cross patch boundaries. */
+			if (BPF_OP(code) == BPF_CALL) {
+				if (insn->src_reg != BPF_PSEUDO_CALL)
+					continue;
+				ret = bpf_adj_delta_to_imm(insn, pos, end_old,
+							   end_new, i,
+							   probe_pass);
+			} else {
+				ret = bpf_adj_delta_to_off(insn, pos, end_old,
+							   end_new, i,
+							   probe_pass);
+			}
 		}
 		if (ret)
 			break;
